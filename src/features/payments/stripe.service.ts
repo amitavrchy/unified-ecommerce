@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import Stripe from 'stripe';
+import { Prisma } from '../../../generated/prisma/client';
 import {
   OrderStatus,
   PaymentPurpose,
@@ -19,47 +20,29 @@ import {
 } from '../../../generated/prisma/enums';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { PrismaService } from '../../database/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import type {
   CreateCartCheckoutDto,
   CreateOrderCheckoutDto,
+  PreviewCheckoutDto,
 } from './dto/checkout.dto';
+import { checkoutCurrency, quoteOrderTotals } from './order-pricing';
+import { checkoutRedirectUrls, stripeSecretKey } from './checkout-urls';
+import { orderDetailInclude } from '../orders/order-detail';
 
 @Injectable()
 export class StripeService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   private client(): Stripe {
-    const secret = process.env.STRIPE_SECRET_KEY;
-    if (!secret)
-      throw new InternalServerErrorException('Stripe is not configured');
-    return new Stripe(secret);
+    return new Stripe(stripeSecretKey());
   }
 
   private currency(): string {
-    const currency = (process.env.STRIPE_CURRENCY ?? 'cad').toLowerCase();
-    if (!/^[a-z]{3}$/.test(currency))
-      throw new InternalServerErrorException(
-        'STRIPE_CURRENCY must be an ISO 4217 currency code',
-      );
-    return currency;
-  }
-
-  private clientUrl(): string {
-    const value = process.env.CLIENT_APP_URL;
-    if (!value)
-      throw new InternalServerErrorException(
-        'CLIENT_APP_URL is required for Checkout',
-      );
-    return value.replace(/\/$/, '');
-  }
-
-  private taxRate(): number {
-    const rate = Number(process.env.TAX_RATE ?? 0.14975);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 1)
-      throw new InternalServerErrorException(
-        'TAX_RATE must be a decimal between 0 and 1',
-      );
-    return rate;
+    return checkoutCurrency();
   }
 
   async createOrderCheckout(user: AuthUser, dto: CreateOrderCheckoutDto) {
@@ -123,11 +106,13 @@ export class StripeService {
         quantity: quantities.get(product.id)!,
         unitPrice: product.price,
       }));
-      const subtotal = items.reduce(
-        (sum, item) => sum + Number(item.unitPrice) * item.quantity,
-        0,
+      const totals = quoteOrderTotals(
+        products.map((product) => ({
+          price: Number(product.price),
+          quantity: quantities.get(product.id)!,
+          taxable: product.taxable,
+        })),
       );
-      const tax = Number((subtotal * this.taxRate()).toFixed(2));
       const order = await tx.order.create({
         data: {
           orderNumber: `CC-${randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()}`,
@@ -141,9 +126,9 @@ export class StripeService {
             zipCode: address.zipCode,
             country: address.country,
           },
-          subtotal,
-          tax,
-          total: subtotal + tax,
+          subtotal: totals.subtotal,
+          tax: totals.tax,
+          total: totals.total,
           inventoryReservedAt: new Date(),
           items: { create: items },
           statusHistory: {
@@ -178,8 +163,7 @@ export class StripeService {
           mode: 'payment',
           client_reference_id: prepared.payment.id,
           customer_email: user.email,
-          success_url: `${this.clientUrl()}/orders/${prepared.order.id}/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${this.clientUrl()}/orders/${prepared.order.id}/cancelled`,
+          ...checkoutRedirectUrls({ orderId: prepared.order.id }),
           metadata: {
             paymentId: prepared.payment.id,
             orderId: prepared.order.id,
@@ -277,6 +261,99 @@ export class StripeService {
     });
   }
 
+  async previewCheckout(user: AuthUser, dto: PreviewCheckoutDto) {
+    if (user.role !== UserRole.CUSTOMER)
+      throw new ForbiddenException('Only customers can checkout');
+
+    const quantities = new Map<string, number>();
+    let source: 'cart' | 'items' = 'items';
+    if (dto.items) {
+      if (!dto.items.length)
+        throw new BadRequestException('Checkout requires at least one item');
+      for (const item of dto.items)
+        quantities.set(
+          item.productId,
+          (quantities.get(item.productId) ?? 0) + item.quantity,
+        );
+    } else {
+      source = 'cart';
+      const cart = await this.prisma.cart.findUnique({
+        where: { customerId: user.id },
+        include: { items: true },
+      });
+      if (!cart?.items.length) throw new BadRequestException('Cart is empty');
+      for (const item of cart.items)
+        quantities.set(item.productId, item.quantity);
+    }
+
+    const address = dto.shippingAddressId
+      ? await this.prisma.address.findFirst({
+          where: { id: dto.shippingAddressId, userId: user.id },
+        })
+      : await this.prisma.address.findFirst({
+          where: { userId: user.id, isPrimary: true },
+        });
+    if (dto.shippingAddressId && !address)
+      throw new ForbiddenException(
+        'Shipping address does not belong to the customer',
+      );
+
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: [...quantities.keys()] }, isActive: true },
+    });
+    if (products.length !== quantities.size)
+      throw new NotFoundException('One or more products are unavailable');
+    for (const product of products) {
+      const quantity = quantities.get(product.id)!;
+      if (product.stock < quantity)
+        throw new BadRequestException(
+          `${product.name} no longer has enough stock`,
+        );
+    }
+
+    const items = products.map((product) => {
+      const quantity = quantities.get(product.id)!;
+      const unitPrice = Number(product.price);
+      return {
+        productId: product.id,
+        name: product.name,
+        quantity,
+        unitPrice,
+        lineTotal: Number((unitPrice * quantity).toFixed(2)),
+        taxable: product.taxable,
+        inStock: product.stock > 0,
+        availableStock: product.stock,
+        tagline: product.features[0] ?? null,
+        imageUrls: product.imageUrls,
+      };
+    });
+    return {
+      source,
+      items,
+      itemCount: items.reduce((count, item) => count + item.quantity, 0),
+      currency: this.currency(),
+      shippingAddress: address
+        ? {
+            id: address.id,
+            line1: address.line1,
+            apartment: address.apartment,
+            city: address.city,
+            state: address.state,
+            zipCode: address.zipCode,
+            country: address.country,
+            isPrimary: address.isPrimary,
+          }
+        : null,
+      ...quoteOrderTotals(
+        items.map((item) => ({
+          price: item.unitPrice,
+          quantity: item.quantity,
+          taxable: item.taxable,
+        })),
+      ),
+    };
+  }
+
   async createServiceAuthorization(user: AuthUser, requestId: string) {
     if (user.role !== UserRole.CUSTOMER) throw new ForbiddenException();
     const request = await this.prisma.serviceRequest.findFirst({
@@ -288,13 +365,12 @@ export class StripeService {
     const quote = request.quotation;
     if (quote.status !== QuoteStatus.ACCEPTED || quote.validUntil <= new Date())
       throw new BadRequestException('An active accepted quotation is required');
-    // Serialize creation per quote at the database level. After the local
-    // attempt exists, its persisted Stripe idempotency key makes concurrent
-    // retries converge on the exact same PaymentIntent rather than placing
-    // multiple manual-capture card holds.
-    const payment = await this.prisma.$transaction(async (tx) => {
+    const authorizedAmount = quote.negotiatedTotal ?? quote.totalAmount;
+    // Claim one payment per quotation before contacting Stripe. Concurrent
+    // requests reuse the persisted idempotency key, including after timeouts.
+    const existing = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quote-authorization:${quote.id}`}))`;
-      const existing = await tx.payment.findFirst({
+      const active = await tx.payment.findFirst({
         where: {
           quotationId: quote.id,
           purpose: PaymentPurpose.QUOTATION,
@@ -308,84 +384,130 @@ export class StripeService {
         },
         orderBy: { createdAt: 'desc' },
       });
-      if (existing?.idempotencyKey) return existing;
-      if (existing) {
+      if (active?.idempotencyKey) return active;
+      if (active)
         return tx.payment.update({
-          where: { id: existing.id },
+          where: { id: active.id },
           data: { idempotencyKey: randomUUID() },
         });
-      }
       return tx.payment.create({
         data: {
           userId: user.id,
           quotationId: quote.id,
           purpose: PaymentPurpose.QUOTATION,
-          amount: quote.totalAmount,
+          amount: authorizedAmount,
           currency: this.currency(),
-          // PROCESSING here means an authorization attempt has been claimed;
-          // it has not yet been confirmed/captured by Stripe.
           status: PaymentStatus.PROCESSING,
           idempotencyKey: randomUUID(),
         },
       });
     });
-    if (payment.stripePaymentIntentId) {
-      const intent = await this.client().paymentIntents.retrieve(
-        payment.stripePaymentIntentId,
-      );
+    if (existing?.status === PaymentStatus.AUTHORIZED) {
       return {
-        paymentId: payment.id,
-        paymentIntentId: intent.id,
-        clientSecret: intent.client_secret,
-        status: intent.status,
-        amount: Number(payment.amount),
-        currency: payment.currency,
+        paymentId: existing.id,
+        requestId,
+        checkoutUrl: null,
+        checkoutSessionId: existing.stripeCheckoutSessionId,
+        amount: Number(existing.amount),
+        currency: existing.currency,
       };
     }
-    let intent: Stripe.PaymentIntent | undefined;
+    if (existing?.stripeCheckoutSessionId) {
+      const session = await this.client().checkout.sessions.retrieve(
+        existing.stripeCheckoutSessionId,
+      );
+      if (session.status === 'complete') {
+        throw new BadRequestException(
+          'Authorization is being confirmed; check the payment status',
+        );
+      }
+      if (session.status === 'open' && session.url) {
+        return {
+          paymentId: existing.id,
+          requestId,
+          checkoutUrl: session.url,
+          checkoutSessionId: session.id,
+          amount: Number(existing.amount),
+          currency: existing.currency,
+        };
+      }
+    }
+    const payment = existing;
     try {
-      intent = await this.client().paymentIntents.create(
+      const session = await this.client().checkout.sessions.create(
         {
-          amount: this.toMinorUnit(quote.totalAmount),
-          currency: this.currency(),
-          capture_method: 'manual',
+          mode: 'payment',
+          client_reference_id: payment.id,
+          customer_email: user.email,
+          ...checkoutRedirectUrls({
+            requestId,
+            paymentId: payment.id,
+          }),
           metadata: {
             paymentId: payment.id,
             quotationId: quote.id,
             requestId,
             purpose: PaymentPurpose.QUOTATION,
           },
+          payment_intent_data: {
+            capture_method: 'manual',
+            metadata: {
+              paymentId: payment.id,
+              quotationId: quote.id,
+              requestId,
+              purpose: PaymentPurpose.QUOTATION,
+            },
+          },
+          line_items: [
+            {
+              quantity: 1,
+              price_data: {
+                currency: this.currency(),
+                unit_amount: this.toMinorUnit(authorizedAmount),
+                product_data: {
+                  name: `Service quote ${quote.quoteNumber}`,
+                },
+              },
+            },
+          ],
         },
-        { idempotencyKey: payment.idempotencyKey! },
+        {
+          idempotencyKey: existing.stripeCheckoutSessionId
+            ? `${payment.idempotencyKey}:${existing.stripeCheckoutSessionId}`
+            : payment.idempotencyKey!,
+        },
       );
+      if (!session.url)
+        throw new InternalServerErrorException(
+          'Stripe did not return a Checkout URL',
+        );
+      const paymentIntentId = this.checkoutPaymentIntentId(session);
       const updated = await this.prisma.payment.update({
         where: { id: payment.id },
         data: {
-          stripePaymentIntentId: intent.id,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId: paymentIntentId,
           status: PaymentStatus.PROCESSING,
         },
       });
       return {
         paymentId: updated.id,
-        paymentIntentId: intent.id,
-        clientSecret: intent.client_secret,
-        status: intent.status,
+        requestId,
+        checkoutUrl: session.url,
+        checkoutSessionId: session.id,
         amount: Number(updated.amount),
         currency: updated.currency,
       };
     } catch (error) {
-      // A network failure can happen after Stripe created the intent. Keep the
-      // attempt active so a retry uses the same Stripe idempotency key and
-      // cannot create a second authorization hold.
-      if (!intent) {
-        await this.prisma.payment.updateMany({
-          where: { id: payment.id, stripePaymentIntentId: null },
-          data: {
-            failureMessage:
-              'Stripe authorization creation is pending a safe retry',
-          },
-        });
-      }
+      // Stripe may have accepted the request before a network/DB failure.
+      // Keep this attempt active so the next request safely retries its key.
+      await this.prisma.payment.updateMany({
+        where: { id: payment.id, stripeCheckoutSessionId: null },
+        data: {
+          failureMessage:
+            'Stripe authorization creation is pending a safe retry',
+        },
+      });
       throw error;
     }
   }
@@ -524,40 +646,44 @@ export class StripeService {
     );
     return this.prisma.order.findUniqueOrThrow({
       where: { id: orderId },
-      include: {
-        items: { include: { product: true } },
-        returnRequest: true,
-        statusHistory: { orderBy: { createdAt: 'asc' } },
-        payments: true,
-      },
+      include: orderDetailInclude,
     });
   }
 
-  async refundDeliveredOrder(user: AuthUser, orderId: string) {
+  async refundDeliveredOrder(
+    user: AuthUser,
+    orderId: string,
+    returnRequestId?: string,
+  ) {
     if (user.role !== UserRole.ADMIN)
       throw new ForbiddenException('Only administrators can issue refunds');
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { returnRequest: true, payments: true },
+      include: { returnRequests: true, payments: true, items: true },
     });
     if (!order) throw new NotFoundException('Order not found');
-    if (!order.returnRequest) {
+    const eligible = order.returnRequests.filter(
+      (request) =>
+        request.status === ReturnStatus.APPROVED ||
+        request.status === ReturnStatus.RECEIVED,
+    );
+    const returnRequest = returnRequestId
+      ? eligible.find((request) => request.id === returnRequestId)
+      : eligible.length === 1
+        ? eligible[0]
+        : undefined;
+    if (!returnRequest) {
       throw new BadRequestException(
-        'A return request is required before refunding',
-      );
-    }
-    if (
-      order.returnRequest.status !== ReturnStatus.APPROVED &&
-      order.returnRequest.status !== ReturnStatus.RECEIVED
-    ) {
-      throw new BadRequestException(
-        'The return must be approved or received before refunding',
+        returnRequestId
+          ? 'The selected return is not eligible for refund'
+          : 'Specify returnRequestId when more than one eligible return exists',
       );
     }
     const payment = order.payments.find(
       (candidate) =>
         candidate.purpose === PaymentPurpose.ORDER &&
-        candidate.status === PaymentStatus.SUCCEEDED &&
+        (candidate.status === PaymentStatus.SUCCEEDED ||
+          candidate.status === PaymentStatus.PARTIALLY_REFUNDED) &&
         Boolean(candidate.stripePaymentIntentId),
     );
     if (!payment?.stripePaymentIntentId) {
@@ -565,60 +691,86 @@ export class StripeService {
         'A successful Stripe order payment was not found',
       );
     }
+    const remaining = Number(
+      payment.amount.minus(payment.refundedAmount).toFixed(2),
+    );
+    const refundAmount = this.refundAmountForReturn(
+      order,
+      returnRequest,
+      remaining,
+    );
+    if (refundAmount <= 0) {
+      throw new BadRequestException('No remaining refundable amount');
+    }
     const refund = await this.client().refunds.create(
       {
         payment_intent: payment.stripePaymentIntentId,
-        metadata: { paymentId: payment.id, orderId },
+        amount: this.toMinorUnit(refundAmount),
+        metadata: {
+          paymentId: payment.id,
+          orderId,
+          returnRequestId: returnRequest.id,
+        },
       },
-      { idempotencyKey: `refund-${payment.id}` },
+      { idempotencyKey: `refund-${payment.id}-${returnRequest.id}` },
     );
     if (refund.status !== 'succeeded')
       throw new BadRequestException('Stripe refund did not complete');
-    if (refund.amount !== this.toMinorUnit(payment.amount)) {
+    if (refund.amount !== this.toMinorUnit(refundAmount)) {
       throw new BadRequestException(
-        'Stripe returned an unexpected refund amount for this order',
+        'Stripe returned an unexpected refund amount for this return',
       );
     }
-    const refundedAmount = Number(refund.amount) / 100;
+    const refundedAmount = Number(
+      payment.refundedAmount.plus(refundAmount).toFixed(2),
+    );
+    const fullyRefunded = refundedAmount >= Number(payment.amount);
     await this.prisma.$transaction(async (tx) => {
       await tx.payment.update({
         where: { id: payment.id },
         data: {
-          status: PaymentStatus.REFUNDED,
+          status: fullyRefunded
+            ? PaymentStatus.REFUNDED
+            : PaymentStatus.PARTIALLY_REFUNDED,
           stripeRefundId: refund.id,
           refundedAmount,
         },
       });
       await tx.returnRequest.update({
-        where: { id: order.returnRequest!.id },
+        where: { id: returnRequest.id },
         data: {
           status: ReturnStatus.REFUNDED,
           resolution: `Stripe refund ${refund.id}`,
         },
       });
-      await tx.order.update({
-        where: { id: orderId },
-        data: { status: OrderStatus.REFUNDED },
-      });
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId,
-          status: OrderStatus.REFUNDED,
-          actorId: user.id,
-          note: `Stripe refund ${refund.id}`,
-        },
-      });
+      if (fullyRefunded) {
+        await tx.order.update({
+          where: { id: orderId },
+          data: { status: OrderStatus.REFUNDED },
+        });
+        await tx.orderStatusHistory.create({
+          data: {
+            orderId,
+            status: OrderStatus.REFUNDED,
+            actorId: user.id,
+            note: `Stripe refund ${refund.id}`,
+          },
+        });
+      }
       await tx.notification.create({
         data: {
           userId: order.customerId,
-          title: 'Order refund issued',
-          body: `A refund of ${refundedAmount.toFixed(2)} ${payment.currency.toUpperCase()} has been issued for order ${order.orderNumber}.`,
+          title: fullyRefunded
+            ? 'Order refund issued'
+            : 'Partial order refund issued',
+          body: `A refund of ${refundAmount.toFixed(2)} ${payment.currency.toUpperCase()} has been issued for order ${order.orderNumber}.`,
           data: { orderId, paymentId: payment.id, refundId: refund.id },
         },
       });
+      this.notifications.notifyUser(order.customerId);
     });
     return this.prisma.returnRequest.findUniqueOrThrow({
-      where: { id: order.returnRequest.id },
+      where: { id: returnRequest.id },
     });
   }
 
@@ -630,7 +782,68 @@ export class StripeService {
     if (!payment) throw new NotFoundException('Payment not found');
     if (user.role !== UserRole.ADMIN && payment.userId !== user.id)
       throw new ForbiddenException();
-    return payment;
+    const reconciled = await this.reconcileOpenCheckoutPayment(payment);
+    return reconciled ?? payment;
+  }
+
+  /**
+   * Order list/detail must not wait on the webhook. If Checkout already
+   * collected payment, mark the order paid before returning it.
+   */
+  async syncPendingOrderPayment(orderId: string): Promise<boolean> {
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        orderId,
+        purpose: PaymentPurpose.ORDER,
+        status: {
+          in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING],
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!payment) return false;
+    const reconciled = await this.reconcileOpenCheckoutPayment(payment);
+    return Boolean(reconciled);
+  }
+
+  /**
+   * Success-page polling must not depend on the webhook arriving first.
+   * If Checkout already finished, apply the same completion path here.
+   */
+  private async reconcileOpenCheckoutPayment(payment: {
+    id: string;
+    purpose: PaymentPurpose;
+    status: PaymentStatus;
+    stripeCheckoutSessionId: string | null;
+  }) {
+    const awaitingConfirmation =
+      payment.status === PaymentStatus.PENDING ||
+      payment.status === PaymentStatus.PROCESSING;
+    if (!awaitingConfirmation || !payment.stripeCheckoutSessionId) return null;
+
+    try {
+      const session = await this.client().checkout.sessions.retrieve(
+        payment.stripeCheckoutSessionId,
+        { expand: ['payment_intent'] },
+      );
+
+      if (payment.purpose === PaymentPurpose.QUOTATION) {
+        if (session.status !== 'complete') return null;
+        await this.attachServiceCheckoutSession(session);
+      } else if (payment.purpose === PaymentPurpose.ORDER) {
+        if (session.payment_status !== 'paid') return null;
+        await this.completeOrderPayment(session);
+      } else {
+        return null;
+      }
+
+      return this.prisma.payment.findUnique({
+        where: { id: payment.id },
+        include: { order: true, quotation: { include: { request: true } } },
+      });
+    } catch {
+      return null;
+    }
   }
 
   async handleWebhook(rawBody: Buffer, signature: string | undefined) {
@@ -697,6 +910,10 @@ export class StripeService {
       event.type === 'checkout.session.async_payment_succeeded'
     ) {
       const session = event.data.object;
+      if (session.metadata?.purpose === PaymentPurpose.QUOTATION) {
+        await this.attachServiceCheckoutSession(session);
+        return;
+      }
       if (session.payment_status === 'paid')
         await this.completeOrderPayment(session);
       return;
@@ -751,7 +968,7 @@ export class StripeService {
     await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payment.findUnique({
         where: { stripeCheckoutSessionId: session.id },
-        include: { order: true },
+        include: { order: { include: { items: true } } },
       });
       if (!payment?.orderId || payment.purpose !== PaymentPurpose.ORDER)
         throw new NotFoundException('Order payment not found');
@@ -801,7 +1018,48 @@ export class StripeService {
           data: { orderId: payment.orderId },
         },
       });
+      this.notifications.notifyUser(payment.userId);
+      await this.notifications.fanOutToActiveAdmins(
+        {
+          title: 'Order paid',
+          body: `Order ${payment.order?.orderNumber ?? payment.orderId} was paid.`,
+          data: { orderId: payment.orderId, paymentId: payment.id },
+        },
+        tx,
+      );
+      if (payment.order?.items.length) {
+        await this.removePurchasedItemsFromCart(
+          tx,
+          payment.userId,
+          payment.order.items,
+        );
+      }
     });
+  }
+
+  private async removePurchasedItemsFromCart(
+    tx: Pick<Prisma.TransactionClient, 'cart' | 'cartItem'>,
+    userId: string,
+    items: { productId: string; quantity: number }[],
+  ) {
+    const cart = await tx.cart.findUnique({ where: { customerId: userId } });
+    if (!cart) return;
+    for (const item of items) {
+      const cartItem = await tx.cartItem.findUnique({
+        where: {
+          cartId_productId: { cartId: cart.id, productId: item.productId },
+        },
+      });
+      if (!cartItem) continue;
+      if (cartItem.quantity <= item.quantity) {
+        await tx.cartItem.delete({ where: { id: cartItem.id } });
+      } else {
+        await tx.cartItem.update({
+          where: { id: cartItem.id },
+          data: { quantity: cartItem.quantity - item.quantity },
+        });
+      }
+    }
   }
 
   /**
@@ -906,26 +1164,47 @@ export class StripeService {
       throw new BadRequestException(
         'Stripe PaymentIntent has no payment reference',
       );
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-    });
-    if (
-      !payment ||
-      payment.purpose !== PaymentPurpose.QUOTATION ||
-      payment.stripePaymentIntentId !== intent.id ||
-      intent.currency !== payment.currency ||
-      intent.amount !== this.toMinorUnit(payment.amount)
-    ) {
-      throw new BadRequestException(
-        'Stripe authorization does not match the expected quote',
-      );
-    }
-    await this.prisma.payment.updateMany({
-      where: {
-        id: payment.id,
-        status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
-      },
-      data: { status: PaymentStatus.AUTHORIZED, authorizedAt: new Date() },
+    await this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+      });
+      if (
+        !payment ||
+        payment.purpose !== PaymentPurpose.QUOTATION ||
+        (payment.stripePaymentIntentId != null &&
+          payment.stripePaymentIntentId !== intent.id) ||
+        intent.currency !== payment.currency ||
+        intent.amount !== this.toMinorUnit(payment.amount)
+      ) {
+        throw new BadRequestException(
+          'Stripe authorization does not match the expected quote',
+        );
+      }
+      const authorized = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+        },
+        data: {
+          status: PaymentStatus.AUTHORIZED,
+          authorizedAt: new Date(),
+          stripePaymentIntentId: intent.id,
+        },
+      });
+      if (authorized.count === 1) {
+        await this.notifications.fanOutToActiveAdmins(
+          {
+            title: 'Service payment authorized',
+            body: 'A customer payment authorization is ready for scheduling.',
+            data: {
+              paymentId: payment.id,
+              quoteId: payment.quotationId,
+              requestId: intent.metadata.requestId,
+            },
+          },
+          tx,
+        );
+      }
     });
   }
 
@@ -981,7 +1260,32 @@ export class StripeService {
           },
         },
       });
+      this.notifications.notifyUser(payment.userId);
     });
+  }
+
+  private async attachServiceCheckoutSession(session: Stripe.Checkout.Session) {
+    const paymentId = session.metadata?.paymentId;
+    if (!paymentId) return;
+    const paymentIntentId = this.checkoutPaymentIntentId(session);
+    await this.prisma.payment.updateMany({
+      where: { id: paymentId, purpose: PaymentPurpose.QUOTATION },
+      data: {
+        stripeCheckoutSessionId: session.id,
+        ...(paymentIntentId ? { stripePaymentIntentId: paymentIntentId } : {}),
+      },
+    });
+    if (!paymentIntentId) return;
+    const intent = await this.client().paymentIntents.retrieve(paymentIntentId);
+    if (intent.status === 'requires_capture') {
+      await this.authorizeServicePaymentIntent(intent);
+    }
+  }
+
+  private checkoutPaymentIntentId(session: Stripe.Checkout.Session) {
+    const value = session.payment_intent;
+    if (!value) return undefined;
+    return typeof value === 'string' ? value : value.id;
   }
 
   private checkoutResponse(
@@ -1002,6 +1306,36 @@ export class StripeService {
       currency: payment.currency,
       amount: Number(payment.amount),
     };
+  }
+
+  private refundAmountForReturn(
+    order: {
+      subtotal: unknown;
+      tax: unknown;
+      items: { id: string; quantity: number; unitPrice: unknown }[];
+    },
+    returnRequest: { orderItemId: string | null },
+    remaining: number,
+  ) {
+    if (!returnRequest.orderItemId) {
+      return remaining;
+    }
+    const item = order.items.find(
+      (candidate) => candidate.id === returnRequest.orderItemId,
+    );
+    if (!item) {
+      throw new BadRequestException(
+        'The return item is no longer on this order',
+      );
+    }
+    const subtotal = Number(order.subtotal);
+    const itemSubtotal = Number(item.unitPrice) * item.quantity;
+    const proportionalTax =
+      subtotal > 0 ? (itemSubtotal / subtotal) * Number(order.tax) : 0;
+    return Math.min(
+      remaining,
+      Number((itemSubtotal + proportionalTax).toFixed(2)),
+    );
   }
 
   private toMinorUnit(amount: unknown): number {

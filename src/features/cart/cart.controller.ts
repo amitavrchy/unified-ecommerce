@@ -1,13 +1,11 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
-  Get,
-  NotFoundException,
+  Delete,
   Param,
   Patch,
   Post,
-  Delete,
+  Get,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -21,7 +19,6 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { UserRole } from '../../../generated/prisma/enums';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../common/auth/jwt-auth.guard';
@@ -32,32 +29,29 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { AddCartItemDto, UpdateCartItemDto } from './dto/cart.dto';
 import { CartResponseDto } from './dto/cart-response.dto';
-
-const cartInclude = {
-  items: { include: { product: true }, orderBy: { createdAt: 'asc' } },
-} as const;
+import { CartService } from './cart.service';
 
 @ApiTags('Cart')
 @ApiBearerAuth()
 @Controller('cart')
 @UseGuards(JwtAuthGuard)
 export class CartController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cart: CartService,
+  ) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get the authenticated customer cart' })
+  @ApiOperation({
+    summary: 'Get the authenticated customer cart with live totals',
+    description:
+      'Subtotal, estimated tax (TAX_RATE), shippingFee (currently 0), and total are calculated from live catalog prices. Checkout still re-prices and reserves stock.',
+  })
   @ApiOkResponse({ type: CartResponseDto })
   @ApiForbiddenResponse({ type: ApiErrorResponseDto })
   @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
-  async get(@CurrentUser() user: AuthUser) {
-    this.customer(user);
-    const cart = await this.prisma.cart.upsert({
-      where: { customerId: user.id },
-      create: { customerId: user.id },
-      update: {},
-      include: cartInclude,
-    });
-    return this.response(cart);
+  get(@CurrentUser() user: AuthUser) {
+    return this.cart.get(user);
   }
 
   @Post('items')
@@ -68,31 +62,8 @@ export class CartController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   @ApiForbiddenResponse({ type: ApiErrorResponseDto })
   @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
-  async add(@CurrentUser() user: AuthUser, @Body() dto: AddCartItemDto) {
-    this.customer(user);
-    const product = await this.prisma.product.findFirst({
-      where: { id: dto.productId, isActive: true },
-    });
-    if (!product) throw new NotFoundException('Product is not available');
-    const cart = await this.prisma.cart.upsert({
-      where: { customerId: user.id },
-      create: { customerId: user.id },
-      update: {},
-    });
-    const existing = await this.prisma.cartItem.findUnique({
-      where: { cartId_productId: { cartId: cart.id, productId: product.id } },
-    });
-    const quantity = (existing?.quantity ?? 0) + dto.quantity;
-    if (quantity > product.stock)
-      throw new ForbiddenException(
-        'Requested quantity exceeds available stock',
-      );
-    await this.prisma.cartItem.upsert({
-      where: { cartId_productId: { cartId: cart.id, productId: product.id } },
-      create: { cartId: cart.id, productId: product.id, quantity },
-      update: { quantity },
-    });
-    return this.get(user);
+  add(@CurrentUser() user: AuthUser, @Body() dto: AddCartItemDto) {
+    return this.cart.add(user, dto.productId, dto.quantity);
   }
 
   @Patch('items/:productId')
@@ -102,30 +73,12 @@ export class CartController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   @ApiForbiddenResponse({ type: ApiErrorResponseDto })
   @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
-  async update(
+  update(
     @CurrentUser() user: AuthUser,
     @Param('productId') productId: string,
     @Body() dto: UpdateCartItemDto,
   ) {
-    this.customer(user);
-    const cart = await this.prisma.cart.findUnique({
-      where: { customerId: user.id },
-    });
-    if (!cart) throw new NotFoundException('Cart is empty');
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, isActive: true },
-    });
-    if (!product) throw new NotFoundException('Product is not available');
-    if (dto.quantity > product.stock)
-      throw new ForbiddenException(
-        'Requested quantity exceeds available stock',
-      );
-    const updated = await this.prisma.cartItem.updateMany({
-      where: { cartId: cart.id, productId },
-      data: { quantity: dto.quantity },
-    });
-    if (!updated.count) throw new NotFoundException('Cart item not found');
-    return this.get(user);
+    return this.cart.updateQuantity(user, productId, dto.quantity);
   }
 
   @Delete('items/:productId')
@@ -138,7 +91,7 @@ export class CartController {
     @CurrentUser() user: AuthUser,
     @Param('productId') productId: string,
   ) {
-    this.customer(user);
+    this.cart.assertCustomer(user);
     const cart = await this.prisma.cart.findUnique({
       where: { customerId: user.id },
     });
@@ -146,7 +99,7 @@ export class CartController {
       await this.prisma.cartItem.deleteMany({
         where: { cartId: cart.id, productId },
       });
-    return this.get(user);
+    return this.cart.get(user);
   }
 
   @Delete()
@@ -155,37 +108,12 @@ export class CartController {
   @ApiForbiddenResponse({ type: ApiErrorResponseDto })
   @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
   async clear(@CurrentUser() user: AuthUser) {
-    this.customer(user);
+    this.cart.assertCustomer(user);
     const cart = await this.prisma.cart.findUnique({
       where: { customerId: user.id },
     });
     if (cart)
       await this.prisma.cartItem.deleteMany({ where: { cartId: cart.id } });
     return { success: true };
-  }
-
-  private response(
-    cart: {
-      id: string;
-      customerId: string;
-      items: { quantity: number; product: { price: unknown } }[];
-    } & object,
-  ) {
-    return {
-      ...cart,
-      subtotal: Number(
-        cart.items
-          .reduce(
-            (total, item) => total + Number(item.product.price) * item.quantity,
-            0,
-          )
-          .toFixed(2),
-      ),
-    };
-  }
-
-  private customer(user: AuthUser) {
-    if (user.role !== UserRole.CUSTOMER)
-      throw new ForbiddenException('Only customers have carts');
   }
 }

@@ -15,20 +15,10 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MediaKind, RequestStatus } from '../../../../generated/prisma/enums';
-
-export class AttachmentDto {
-  @ApiProperty({
-    format: 'uri',
-    example: 'https://uploads.example.com/issues/photo-1.jpg',
-  })
-  @IsUrl({ require_tld: false })
-  url!: string;
-
-  @ApiPropertyOptional({ example: 'image/jpeg' })
-  @IsOptional()
-  @IsString()
-  mimeType?: string;
-}
+import {
+  ApiBinaryFile,
+  ApiBinaryFiles,
+} from '../../../common/dto/api-file.decorator';
 
 export class CreateRequestDto {
   @ApiProperty({ example: 'service-category-id' })
@@ -68,13 +58,18 @@ export class CreateRequestDto {
   @IsOptional()
   @IsString()
   preferredTime?: string;
+}
 
-  @ApiPropertyOptional({ type: [AttachmentDto], maxItems: 10 })
-  @IsOptional()
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => AttachmentDto)
-  attachments?: AttachmentDto[];
+/**
+ * Documents the multipart variant of `CreateRequestDto` for Swagger. The file
+ * fields are consumed by the upload interceptor, never by the validation pipe.
+ */
+export class CreateRequestFormDto extends CreateRequestDto {
+  @ApiBinaryFiles('Issue photos. Each file must have an image/* content type.')
+  images?: unknown[];
+
+  @ApiBinaryFiles('Issue clips. Each file must have a video/* content type.')
+  videos?: unknown[];
 }
 
 export class UpdateRequestStatusDto {
@@ -183,7 +178,24 @@ export class RejectQuoteDto {
   reason?: string;
 }
 
-export class MediaDto extends AttachmentDto {
+export class MediaDto {
+  @ApiPropertyOptional({
+    format: 'uri',
+    example: 'https://uploads.example.com/issues/photo-1.jpg',
+    description: 'Required unless a file is uploaded on the file field.',
+  })
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  url?: string;
+
+  @ApiPropertyOptional({
+    example: 'image/jpeg',
+    description: 'Ignored for uploads; taken from the uploaded file instead.',
+  })
+  @IsOptional()
+  @IsString()
+  mimeType?: string;
+
   @ApiProperty({
     enum: MediaKind,
     enumName: 'MediaKind',
@@ -191,6 +203,14 @@ export class MediaDto extends AttachmentDto {
   })
   @IsEnum(MediaKind)
   kind!: MediaKind;
+}
+
+/** Documents the multipart variant of `MediaDto` for Swagger. */
+export class MediaFormDto extends MediaDto {
+  @ApiBinaryFile(
+    'Image or video file uploaded to Cloudinary in place of a url.',
+  )
+  file?: unknown;
 }
 
 export class PartUsedDto {
@@ -306,6 +326,63 @@ export class EquipmentDto {
   @IsOptional()
   @IsString()
   condition?: string;
+
+  @ApiPropertyOptional({ type: [String], example: ['VacPan', 'Wally Flex'] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  additionalFeatures?: string[];
+
+  @ApiPropertyOptional({ type: [InletCountDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InletCountDto)
+  inlets?: InletCountDto[];
+}
+
+export class UpdateEquipmentDto {
+  @ApiPropertyOptional({ example: 'Unit 24' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  unitNumber?: string;
+
+  @ApiPropertyOptional({ example: 'Cyclo Vac' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  manufacturer?: string;
+
+  @ApiPropertyOptional({ example: 'H725' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  model?: string;
+
+  @ApiPropertyOptional({ example: 'SN-123456' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  serialNumber?: string;
+
+  @ApiPropertyOptional({ example: 'Utility room' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  location?: string;
+
+  @ApiPropertyOptional({ example: 'Good' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  condition?: string;
+
+  @ApiPropertyOptional({ type: [String], example: ['VacPan', 'Wally Flex'] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  additionalFeatures?: string[];
 
   @ApiPropertyOptional({ type: [InletCountDto] })
   @IsOptional()

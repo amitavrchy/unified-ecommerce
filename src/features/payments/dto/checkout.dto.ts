@@ -45,6 +45,71 @@ export class CreateOrderCheckoutDto {
   idempotencyKey!: string;
 }
 
+export class PreviewCheckoutDto {
+  @ApiPropertyOptional({
+    type: [CheckoutItemDto],
+    description:
+      'Buy Now / explicit items. Omit this field to preview the saved cart.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CheckoutItemDto)
+  items?: CheckoutItemDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Saved address to attach to the preview. When omitted, the primary address is returned if one exists.',
+    example: 'clx-address-id',
+  })
+  @IsOptional()
+  @IsString()
+  shippingAddressId?: string;
+}
+
+export class CheckoutPreviewItemDto {
+  @ApiProperty({ example: 'clx-product-id' }) productId!: string;
+  @ApiProperty({ example: 'Elite 500 Power Unit' }) name!: string;
+  @ApiProperty({ example: 2 }) quantity!: number;
+  @ApiProperty({ example: 299 }) unitPrice!: number;
+  @ApiProperty({ example: 598 }) lineTotal!: number;
+  @ApiProperty({ example: true }) taxable!: boolean;
+  @ApiProperty({ example: true }) inStock!: boolean;
+  @ApiProperty({ example: 4 }) availableStock!: number;
+  @ApiPropertyOptional({ nullable: true, example: 'Quiet-flow technology' })
+  tagline!: string | null;
+  @ApiProperty({ type: [String] }) imageUrls!: string[];
+}
+
+export class CheckoutPreviewAddressDto {
+  @ApiProperty({ example: 'clx-address-id' }) id!: string;
+  @ApiProperty({ example: '123 Main Street' }) line1!: string;
+  @ApiPropertyOptional({ nullable: true }) apartment!: string | null;
+  @ApiProperty({ example: 'Toronto' }) city!: string;
+  @ApiProperty({ example: 'ON' }) state!: string;
+  @ApiProperty({ example: 'M5V 2T6' }) zipCode!: string;
+  @ApiProperty({ example: 'Canada' }) country!: string;
+  @ApiProperty({ example: true }) isPrimary!: boolean;
+}
+
+export class CheckoutPreviewResponseDto {
+  @ApiProperty({ enum: ['cart', 'items'] }) source!: 'cart' | 'items';
+  @ApiProperty({ type: [CheckoutPreviewItemDto] })
+  items!: CheckoutPreviewItemDto[];
+  @ApiProperty({ example: 2 }) itemCount!: number;
+  @ApiProperty({ example: 598 }) subtotal!: number;
+  @ApiProperty({ example: 89.55 }) tax!: number;
+  @ApiProperty({ example: 0 }) shippingFee!: number;
+  @ApiProperty({ example: 687.55 }) total!: number;
+  @ApiProperty({ example: 0.14975 }) taxRate!: number;
+  @ApiProperty({ example: 'cad' }) currency!: string;
+  @ApiPropertyOptional({
+    type: CheckoutPreviewAddressDto,
+    nullable: true,
+  })
+  shippingAddress!: CheckoutPreviewAddressDto | null;
+}
+
 export class CreateCartCheckoutDto {
   @ApiProperty({
     description: 'A saved customer address ID used for shipping.',
@@ -87,16 +152,21 @@ export class ServiceAuthorizationResponseDto {
   @ApiProperty({ example: 'clx-payment-id' })
   paymentId!: string;
 
-  @ApiProperty({ example: 'pi_...' })
-  paymentIntentId!: string;
+  @ApiProperty({ example: 'clx-request-id' })
+  requestId!: string;
 
-  @ApiProperty({ example: 'pi_..._secret_...' })
-  clientSecret!: string;
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 'https://checkout.stripe.com/c/pay/cs_test_...',
+    description:
+      'Open this URL immediately. Null when the quote is already authorized.',
+  })
+  checkoutUrl!: string | null;
 
-  @ApiProperty({ example: 'requires_confirmation' })
-  status!: string;
+  @ApiPropertyOptional({ nullable: true, example: 'cs_test_...' })
+  checkoutSessionId!: string | null;
 
-  @ApiProperty({ example: 245 })
+  @ApiProperty({ example: 180 })
   amount!: number;
 
   @ApiProperty({ example: 'cad' })

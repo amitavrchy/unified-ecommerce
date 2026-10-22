@@ -9,6 +9,7 @@ import {
   Min,
 } from 'class-validator';
 import { TechnicianVerificationStatus } from '../../../../generated/prisma/enums';
+import { ApiBinaryFile } from '../../../common/dto/api-file.decorator';
 
 export class ProfileDto {
   @ApiPropertyOptional({ example: 'Alex' })
@@ -26,18 +27,18 @@ export class ProfileDto {
   @IsString()
   phone?: string;
 
-  @ApiPropertyOptional({
-    format: 'uri',
-    example: 'https://cdn.example.com/avatars/alex.jpg',
-  })
-  @IsOptional()
-  @IsString()
-  avatarUrl?: string;
-
   @ApiPropertyOptional({ example: 'Morgan Home Services' })
   @IsOptional()
   @IsString()
   company?: string;
+}
+
+/** Documents the multipart variant of `ProfileDto` for Swagger. */
+export class ProfileFormDto extends ProfileDto {
+  @ApiBinaryFile(
+    'Profile picture uploaded to Cloudinary; the returned URL is saved.',
+  )
+  avatar?: unknown;
 }
 
 export class AddressDto {

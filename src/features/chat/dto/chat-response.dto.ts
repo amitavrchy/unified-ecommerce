@@ -25,13 +25,29 @@ export class ChatMessageResponseDto {
   @ApiProperty({ type: ChatSenderResponseDto }) sender!: ChatSenderResponseDto;
 }
 
+export class ConversationCustomerResponseDto {
+  @ApiProperty({ example: 'customer-id' }) id!: string;
+  @ApiProperty({ example: 'Alex' }) firstName!: string;
+  @ApiProperty({ example: 'Morgan' }) lastName!: string;
+  @ApiProperty({ example: 'alex@example.com' }) email!: string;
+  @ApiPropertyOptional({ nullable: true, format: 'uri' }) avatarUrl!:
+    string | null;
+}
+
 export class ConversationResponseDto {
   @ApiProperty({ example: 'conversation-id' }) id!: string;
-  @ApiProperty({ example: 'service-request-id' }) requestId!: string;
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 'service-request-id',
+    description: 'Null for customer–admin support threads.',
+  })
+  requestId!: string | null;
   @ApiProperty({ example: 'customer-id' }) customerId!: string;
   @ApiPropertyOptional({ nullable: true, example: 'technician-id' })
   technicianId!: string | null;
   @ApiProperty({ type: String, format: 'date-time' }) updatedAt!: string;
   @ApiPropertyOptional({ type: ChatMessageResponseDto, nullable: true })
   lastMessage!: ChatMessageResponseDto | null;
+  @ApiPropertyOptional({ type: ConversationCustomerResponseDto })
+  customer?: ConversationCustomerResponseDto;
 }

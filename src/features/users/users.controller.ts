@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,11 +8,15 @@ import {
   Param,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiOkResponse,
@@ -20,6 +25,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   TechnicianVerificationStatus,
   UserRole,
@@ -32,10 +38,12 @@ import {
   SuccessResponseDto,
 } from '../../common/dto/api-response.dto';
 import { PrismaService } from '../../database/prisma.service';
+import { MediaUploadService } from '../../service/cloudinary/media-upload.service';
 import {
   AddressDto,
   NotificationPreferencesDto,
   ProfileDto,
+  ProfileFormDto,
   TechnicianProfileDto,
   TechnicianVerificationDto,
 } from './dto/users.dto';
@@ -47,12 +55,17 @@ import {
   UserWithTechnicianResponseDto,
 } from './dto/user-response.dto';
 
+const AVATAR_FOLDER = 'vacuumCare/avatars';
+
 @ApiTags('Users & Profiles')
 @ApiBearerAuth()
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly media: MediaUploadService,
+  ) {}
 
   @Get('me')
   @ApiOperation({ summary: 'Get the authenticated user profile' })
@@ -67,14 +80,30 @@ export class UsersController {
   }
 
   @Patch('me')
-  @ApiOperation({ summary: 'Update the authenticated user profile' })
+  @ApiOperation({
+    summary: 'Update the authenticated user profile',
+    description:
+      'Send as multipart form data. Upload a profile picture on the avatar field; JSON bodies are still accepted for the text fields alone.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ type: ProfileFormDto })
   @ApiOkResponse({ type: UserResponseDto })
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
-  update(@CurrentUser() user: AuthUser, @Body() dto: ProfileDto) {
+  @UseInterceptors(FileInterceptor('avatar'))
+  async update(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ProfileDto,
+    @UploadedFile() avatar?: Express.Multer.File,
+  ) {
+    let avatarUrl: string | undefined;
+    if (avatar) {
+      this.media.assertImages([avatar]);
+      [avatarUrl] = await this.media.uploadUrls([avatar], AVATAR_FOLDER);
+    }
     return this.prisma.user.update({
       where: { id: user.id },
-      data: dto,
+      data: { ...dto, ...(avatarUrl ? { avatarUrl } : {}) },
       omit: { passwordHash: true },
     });
   }
@@ -132,6 +161,19 @@ export class UsersController {
       where: { id: user.id },
       omit: { passwordHash: true },
       include: { technician: true },
+    });
+  }
+
+  @Get('me/addresses')
+  @ApiOperation({
+    summary: 'List saved addresses for checkout and service requests',
+  })
+  @ApiOkResponse({ type: AddressResponseDto, isArray: true })
+  @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
+  addresses(@CurrentUser() user: AuthUser) {
+    return this.prisma.address.findMany({
+      where: { userId: user.id },
+      orderBy: [{ isPrimary: 'desc' }, { line1: 'asc' }],
     });
   }
 
@@ -288,7 +330,10 @@ export class UsersController {
   payments(@CurrentUser() user: AuthUser) {
     return this.prisma.payment.findMany({
       where: { userId: user.id },
-      include: { quotation: { include: { request: true } } },
+      include: {
+        quotation: { include: { request: true } },
+        order: { select: { id: true, orderNumber: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }

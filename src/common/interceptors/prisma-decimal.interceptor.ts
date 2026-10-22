@@ -15,9 +15,12 @@ import { Observable, map } from 'rxjs';
 @Injectable()
 export class PrismaDecimalInterceptor implements NestInterceptor {
   intercept(
-    _context: ExecutionContext,
+    context: ExecutionContext,
     next: CallHandler,
   ): Observable<unknown> {
+    if (context.getHandler().name === 'stream') {
+      return next.handle();
+    }
     return next.handle().pipe(map((value) => normalizePrismaDecimals(value)));
   }
 }

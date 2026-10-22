@@ -3,52 +3,61 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 @Injectable()
 export class PasswordResetDeliveryService {
   /**
-   * Production email delivery uses Resend's HTTPS API so the backend does not
-   * need an SMTP client or expose reset tokens in API responses. Development
-   * keeps the token available to local clients/tests through the controller.
+   * Sends a 5-digit password-reset OTP via the Brevo transactional email API.
+   * In non-production environments the method returns early — the controller
+   * exposes the raw OTP in the response body instead.
    */
-  async send(email: string, token: string) {
-    if (process.env.NODE_ENV !== 'production') return;
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.RESET_EMAIL_FROM;
-    const resetUrl = process.env.PASSWORD_RESET_URL;
-    if (!apiKey || !from || !resetUrl) {
+  async send(email: string, otp: string): Promise<void> {
+    // Email is now sent in all environments (removed NODE_ENV early return).
+
+    const apiKey = process.env.BREVO_API_KEY;
+    const from = process.env.MAIL_FROM;
+    const fromName = process.env.MAIL_FROM_NAME ?? 'Central Care';
+
+    if (!apiKey || !from) {
       throw new InternalServerErrorException(
-        'Password reset email is not configured',
+        'Password reset email is not configured (BREVO_API_KEY / MAIL_FROM missing)',
       );
     }
-    let link: URL;
-    try {
-      link = new URL(resetUrl);
-      link.searchParams.set('token', token);
-    } catch {
-      throw new InternalServerErrorException(
-        'PASSWORD_RESET_URL must be an absolute frontend URL',
-      );
-    }
-    let response: Response;
-    try {
-      response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from,
-          to: [email],
-          subject: 'Reset your Central Care password',
-          text: `Use this one-time link to reset your password (valid for 15 minutes): ${link.toString()}`,
-        }),
-      });
-    } catch {
-      throw new InternalServerErrorException(
-        'Password reset email could not be sent',
-      );
-    }
+
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: fromName, email: from },
+        to: [{ email }],
+        subject: 'Your Central Care password reset code',
+        textContent: [
+          `Your password reset code is: ${otp}`,
+          '',
+          'Enter this 5-digit code to reset your password.',
+          'It expires in 15 minutes.',
+          '',
+          'If you did not request a password reset, you can safely ignore this email.',
+        ].join('\n'),
+        htmlContent: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+            <h2 style="color:#1a1a1a">Reset your password</h2>
+            <p>Use the code below to reset your Central Care password.</p>
+            <div style="font-size:36px;font-weight:700;letter-spacing:8px;color:#2563eb;
+                        background:#f1f5f9;border-radius:8px;padding:16px 24px;
+                        display:inline-block;margin:16px 0">${otp}</div>
+            <p style="color:#64748b;font-size:14px">This code expires in <strong>15 minutes</strong>.</p>
+            <p style="color:#94a3b8;font-size:12px">
+              If you did not request a password reset, you can safely ignore this email.
+            </p>
+          </div>`,
+      }),
+    });
+
     if (!response.ok) {
+      const body = await response.text().catch(() => '');
       throw new InternalServerErrorException(
-        'Password reset email could not be sent',
+        `Password reset email could not be sent${body ? `: ${body}` : ''}`,
       );
     }
   }

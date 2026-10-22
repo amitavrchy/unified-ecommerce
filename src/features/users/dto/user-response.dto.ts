@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   PaymentPurpose,
   PaymentStatus,
@@ -305,4 +305,10 @@ export class PaymentResponseDto {
     nullable: true,
   })
   quotation!: QuotationPaymentSummaryResponseDto | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: { id: 'order-id', orderNumber: 'CC-AB12CD34' },
+  })
+  order!: { id: string; orderNumber: string } | null;
 }

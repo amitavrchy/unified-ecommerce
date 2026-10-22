@@ -8,3 +8,11 @@ coverage
 npm-debug.log*
 Dockerfile*
 README.md
+
+generated
+.github
+.agents
+.claude
+.windsurf
+*.pem
+docs

@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Header,
   Headers,
   HttpCode,
   HttpStatus,
@@ -34,10 +35,14 @@ import {
   CheckoutSessionResponseDto,
   CreateCartCheckoutDto,
   CreateOrderCheckoutDto,
+  PreviewCheckoutDto,
+  CheckoutPreviewResponseDto,
   ServiceAuthorizationResponseDto,
   StripePaymentResponseDto,
   StripeWebhookReceiptDto,
 } from './dto/checkout.dto';
+import { InvoiceResponseDto } from './dto/invoice.dto';
+import { InvoiceService } from './invoice.service';
 import { StripeService } from './stripe.service';
 
 @ApiTags('Checkout')
@@ -47,11 +52,29 @@ import { StripeService } from './stripe.service';
 export class CheckoutController {
   constructor(private readonly stripe: StripeService) {}
 
+  @Post('preview')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Preview order totals without reserving inventory',
+    description:
+      'Use for the cart/Buy Now summary before opening Stripe. Omit items to preview the saved cart. Pass shippingAddressId to confirm the address that checkout will use.',
+  })
+  @ApiOkResponse({ type: CheckoutPreviewResponseDto })
+  @ApiBadRequestResponse({ type: ApiErrorResponseDto })
+  @ApiForbiddenResponse({ type: ApiErrorResponseDto })
+  @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
+  previewCheckout(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: PreviewCheckoutDto,
+  ) {
+    return this.stripe.previewCheckout(user, dto);
+  }
+
   @Post('orders')
   @ApiOperation({
     summary: 'Create a hosted Stripe Checkout Session for shop items',
     description:
-      'Prices, tax, shipping address ownership, and stock are verified by the server. The returned URL is opened by the client; payment completion comes only from the Stripe webhook.',
+      'Returns checkoutUrl. Redirect the browser there immediately. Cards are entered only on Stripe. Payment completion comes from the webhook after FRONTEND_PAYMENT_SUCCESS_URL.',
   })
   @ApiCreatedResponse({ type: CheckoutSessionResponseDto })
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
@@ -68,7 +91,7 @@ export class CheckoutController {
   @ApiOperation({
     summary: 'Create a hosted Stripe Checkout Session from the saved cart',
     description:
-      'The server reads the saved cart, recalculates prices, and reserves inventory before creating the Stripe Checkout Session.',
+      'Returns checkoutUrl. Redirect the browser there immediately. After payment Stripe sends the customer to FRONTEND_PAYMENT_SUCCESS_URL; this API marks the order paid from the webhook.',
   })
   @ApiCreatedResponse({ type: CheckoutSessionResponseDto })
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
@@ -87,14 +110,17 @@ export class CheckoutController {
 @Controller('payments')
 @UseGuards(JwtAuthGuard)
 export class PaymentsController {
-  constructor(private readonly stripe: StripeService) {}
+  constructor(
+    private readonly stripe: StripeService,
+    private readonly invoices: InvoiceService,
+  ) {}
 
   @Post('service-requests/:requestId/authorization')
   @ApiOperation({
     summary:
-      'Create a Stripe manual-capture authorization for an accepted service quote',
+      'Open Stripe Checkout for an accepted service quote (hosted payment page)',
     description:
-      'The client confirms the returned PaymentIntent client secret using Stripe SDK. It must never submit a provider reference or card details to this API.',
+      'Returns checkoutUrl. The frontend must redirect the browser there immediately. After the customer pays, Stripe sends them to FRONTEND_PAYMENT_SUCCESS_URL and this API records the hold from the webhook. Do not collect cards or confirm a PaymentIntent in the app.',
   })
   @ApiParam({ name: 'requestId', description: 'Service request ID' })
   @ApiCreatedResponse({ type: ServiceAuthorizationResponseDto })
@@ -122,7 +148,21 @@ export class PaymentsController {
     return this.stripe.captureServicePayment(user, id);
   }
 
+  @Get(':id/invoice')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate')
+  @ApiOperation({
+    summary: 'Get a printable invoice assembled from an existing payment',
+  })
+  @ApiParam({ name: 'id', description: 'Payment ID' })
+  @ApiOkResponse({ type: InvoiceResponseDto })
+  @ApiForbiddenResponse({ type: ApiErrorResponseDto })
+  @ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
+  invoice(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.invoices.forPayment(user, id);
+  }
+
   @Get(':id')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate')
   @ApiOperation({
     summary: 'Get a payment visible to the customer or an admin',
   })

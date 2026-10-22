@@ -32,6 +32,9 @@ export class ProductResponseDto {
   @ApiProperty({ example: 'cm6f4m0xw0009s1a2b3c4d5e6' })
   id!: string;
 
+  @ApiPropertyOptional({ nullable: true, example: 'FILTER-HEPA-H700' })
+  sku!: string | null;
+
   @ApiProperty({ example: 'HEPA Replacement Filter' })
   name!: string;
 
@@ -85,6 +88,27 @@ export class ProductResponseDto {
 
   @ApiProperty({ example: true })
   isActive!: boolean;
+
+  @ApiProperty({ example: true })
+  taxable!: boolean;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 'Quiet-flow technology',
+    description: 'Short storefront tagline taken from the first feature.',
+  })
+  tagline!: string | null;
+
+  @ApiProperty({ example: true })
+  inStock!: boolean;
+}
+
+export class ProductCategoryCountDto {
+  @ApiProperty({ example: 'Vacuum' })
+  name!: string;
+
+  @ApiProperty({ example: 12 })
+  count!: number;
 }
 
 export class ProductPageResponseDto {
@@ -99,4 +123,9 @@ export class ProductPageResponseDto {
 
   @ApiProperty({ example: 24 })
   pageSize!: number;
+}
+
+export class ProductDetailResponseDto extends ProductResponseDto {
+  @ApiProperty({ type: [ProductResponseDto] })
+  relatedProducts!: ProductResponseDto[];
 }

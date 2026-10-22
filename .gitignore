@@ -37,6 +37,7 @@ lerna-debug.log*
 
 # dotenv environment variable files
 .env
+.env*
 .env.development.local
 .env.test.local
 .env.production.local
@@ -56,3 +57,12 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+server.pem
+enhancement-ubuntu.pem.pem
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+
+!.env.example
+*.pem
+.deployed-image
