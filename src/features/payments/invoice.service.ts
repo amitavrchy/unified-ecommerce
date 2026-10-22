@@ -1,5 +1,13 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PaymentPurpose, PaymentStatus, UserRole } from '../../../generated/prisma/enums';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  PaymentPurpose,
+  PaymentStatus,
+  UserRole,
+} from '../../../generated/prisma/enums';
 import type { AuthUser } from '../../common/auth/auth.types';
 import { PrismaService } from '../../database/prisma.service';
 import { checkoutTaxRate } from './order-pricing';
@@ -10,7 +18,10 @@ function money(value: unknown) {
 }
 
 function invoiceNumber(paymentId: string, createdAt: Date) {
-  const suffix = paymentId.replace(/[^a-zA-Z0-9]/g, '').slice(-3).toUpperCase();
+  const suffix = paymentId
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(-3)
+    .toUpperCase();
   return `INV-${createdAt.getFullYear()}-${suffix.padStart(3, '0')}`;
 }
 
@@ -34,7 +45,10 @@ function formatShortDate(value: Date | string | null | undefined) {
 
 function formatDuration(start?: Date | null, end?: Date | null) {
   if (!start || !end) return '—';
-  const minutes = Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+  const minutes = Math.max(
+    0,
+    Math.round((end.getTime() - start.getTime()) / 60000),
+  );
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   if (hours && rest) return `${hours}h ${rest}m`;
@@ -42,27 +56,24 @@ function formatDuration(start?: Date | null, end?: Date | null) {
   return `${rest}m`;
 }
 
-function addressLines(address?: {
-  line1?: string | null;
-  apartment?: string | null;
-  city?: string | null;
-  state?: string | null;
-  zipCode?: string | null;
-} | null) {
+function addressLines(
+  address?: {
+    line1?: string | null;
+    apartment?: string | null;
+    city?: string | null;
+    state?: string | null;
+    zipCode?: string | null;
+  } | null,
+) {
   if (!address) return [];
   const street = [address.line1, address.apartment].filter(Boolean).join(', ');
-  const locality = [address.city, address.state]
-    .filter(Boolean)
-    .join(', ');
+  const locality = [address.city, address.state].filter(Boolean).join(', ');
   const cityLine = [locality, address.zipCode].filter(Boolean).join(' ');
   return [street, cityLine].filter(Boolean);
 }
 
 function statusLabel(status: PaymentStatus) {
-  if (
-    status === PaymentStatus.SUCCEEDED ||
-    status === PaymentStatus.CAPTURED
-  ) {
+  if (status === PaymentStatus.SUCCEEDED || status === PaymentStatus.CAPTURED) {
     return 'PAID';
   }
   if (status === PaymentStatus.AUTHORIZED) return 'AUTHORIZED';
@@ -80,7 +91,10 @@ function statusLabel(status: PaymentStatus) {
 export class InvoiceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async forPayment(user: AuthUser, paymentId: string): Promise<InvoiceResponseDto> {
+  async forPayment(
+    user: AuthUser,
+    paymentId: string,
+  ): Promise<InvoiceResponseDto> {
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
       include: {
@@ -192,7 +206,10 @@ export class InvoiceService {
       payment.purpose === PaymentPurpose.ORDER && payment.order
         ? money(payment.order.total)
         : payment.quotation
-          ? money(payment.quotation.negotiatedTotal ?? payment.quotation.totalAmount)
+          ? money(
+              payment.quotation.negotiatedTotal ??
+                payment.quotation.totalAmount,
+            )
           : money(payment.amount);
     const serviceCharges = money(total - subtotal - tax);
     const taxPercent = subtotal
@@ -229,9 +246,14 @@ export class InvoiceService {
             serviceType: request.category.name,
             technician,
             serviceDate: formatShortDate(
-              request.scheduledStart ?? request.preferredDate ?? request.createdAt,
+              request.scheduledStart ??
+                request.preferredDate ??
+                request.createdAt,
             ),
-            duration: formatDuration(request.scheduledStart, request.scheduledEnd),
+            duration: formatDuration(
+              request.scheduledStart,
+              request.scheduledEnd,
+            ),
           }
         : null,
       lineItems,

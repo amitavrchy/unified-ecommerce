@@ -4,10 +4,16 @@ export class InvoicePartyDto {
   @ApiProperty({ example: 'Elite Central Vacuum' })
   name!: string;
 
-  @ApiProperty({ type: [String], example: ['123 Elite Plaza', 'Greenwich, CT 06830'] })
+  @ApiProperty({
+    type: [String],
+    example: ['123 Elite Plaza', 'Greenwich, CT 06830'],
+  })
   addressLines!: string[];
 
-  @ApiPropertyOptional({ nullable: true, example: 'support@elitecentralvacuum.com' })
+  @ApiPropertyOptional({
+    nullable: true,
+    example: 'support@elitecentralvacuum.com',
+  })
   email!: string | null;
 
   @ApiPropertyOptional({ nullable: true })

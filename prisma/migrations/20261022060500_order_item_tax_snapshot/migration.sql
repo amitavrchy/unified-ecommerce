@@ -1,0 +1,1 @@
+ALTER TABLE "OrderItem" ADD COLUMN "taxAmount" DECIMAL(10,2);

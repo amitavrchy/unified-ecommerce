@@ -44,6 +44,8 @@ export function appendCheckoutQuery(
   let url: URL;
   try {
     url = new URL(base);
+    if (!['http:', 'https:'].includes(url.protocol))
+      throw new Error('Unsupported redirect protocol');
   } catch {
     throw new InternalServerErrorException('Payment redirect URL is invalid');
   }

@@ -219,10 +219,11 @@ export class ChatController {
     // orphaned files in Cloudinary.
     const uploaded = await this.media.upload(files, CHAT_MEDIA_FOLDER);
     const attachments = [...hosted, ...uploaded];
-    const body =
-      dto.body?.trim() || (attachments.length ? 'Attachment' : '');
+    const body = dto.body?.trim() || (attachments.length ? 'Attachment' : '');
     if (!body) {
-      throw new BadRequestException('Message body or an attachment is required');
+      throw new BadRequestException(
+        'Message body or an attachment is required',
+      );
     }
     const payload = {
       title: 'New message',

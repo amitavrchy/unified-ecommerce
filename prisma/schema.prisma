@@ -612,6 +612,7 @@ model OrderItem {
   productId      String
   quantity       Int
   unitPrice      Decimal         @db.Decimal(10, 2)
+  taxAmount      Decimal?        @db.Decimal(10, 2)
   order          Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product        Product         @relation(fields: [productId], references: [id])
   returnRequests ReturnRequest[]
@@ -628,6 +629,10 @@ model ReturnRequest {
   resolution     String?
   adminNotes     String?
   returnLabelUrl String?
+  stripeRefundId String? @unique
+  refundAmount Decimal? @db.Decimal(10, 2)
+  refundStatus String?
+  refundAttempt Int @default(0)
   status         ReturnStatus @default(REQUESTED)
   createdAt      DateTime     @default(now())
   order          Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)

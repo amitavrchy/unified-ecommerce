@@ -551,7 +551,9 @@ export class RequestsService {
         ...definedReportFields(dto),
         partsUsed:
           dto.partsUsed !== undefined
-            ? (JSON.parse(JSON.stringify(dto.partsUsed)) as Prisma.InputJsonValue)
+            ? (JSON.parse(
+                JSON.stringify(dto.partsUsed),
+              ) as Prisma.InputJsonValue)
             : undefined,
         arrivalTime:
           dto.arrivalTime !== undefined
@@ -675,7 +677,9 @@ export class RequestsService {
 
 function definedReportFields(dto: Partial<ReportDto>) {
   return {
-    ...(dto.repairStatus !== undefined ? { repairStatus: dto.repairStatus } : {}),
+    ...(dto.repairStatus !== undefined
+      ? { repairStatus: dto.repairStatus }
+      : {}),
     ...(dto.workPerformed !== undefined
       ? { workPerformed: dto.workPerformed }
       : {}),

@@ -129,7 +129,7 @@ export class OrdersController {
         },
       ];
     }
-    let [orders, total] = await this.prisma.$transaction([
+    const [pendingOrders, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({
         where,
         include: orderDetailInclude,
@@ -139,7 +139,7 @@ export class OrdersController {
       }),
       this.prisma.order.count({ where }),
     ]);
-    orders = await this.syncPendingOrders(orders);
+    const orders = await this.syncPendingOrders(pendingOrders);
     return {
       items: orders.map((order) => mapCustomerOrder(order)),
       total,

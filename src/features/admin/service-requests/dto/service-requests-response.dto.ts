@@ -31,7 +31,10 @@ export class AdminServiceRequestItemDto {
   @ApiPropertyOptional({ type: String, format: 'date-time', nullable: true })
   scheduledStart!: Date | null;
   @ApiProperty({ type: String, format: 'date-time' }) createdAt!: Date;
-  @ApiPropertyOptional({ type: AdminServiceRequestQuotationDto, nullable: true })
+  @ApiPropertyOptional({
+    type: AdminServiceRequestQuotationDto,
+    nullable: true,
+  })
   quotation!: AdminServiceRequestQuotationDto | null;
 }
 

@@ -191,6 +191,12 @@ export class OrderStatusHistoryResponseDto {
 }
 
 export class ReturnRequestResponseDto {
+  @ApiPropertyOptional({ nullable: true, example: 're_...' }) stripeRefundId!:
+    string | null;
+  @ApiPropertyOptional({ nullable: true, example: 49.99 }) refundAmount!:
+    number | null;
+  @ApiPropertyOptional({ nullable: true, example: 'pending' }) refundStatus!:
+    string | null;
   @ApiProperty({ example: 'return-id' }) id!: string;
   @ApiProperty({ example: 'order-id' }) orderId!: string;
   @ApiProperty({ enum: ReturnStatus, enumName: 'ReturnStatus' })

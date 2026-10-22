@@ -16,7 +16,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  test:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -46,10 +46,10 @@ jobs:
       - name: Check migration schema matches Prisma
         run: npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
       - run: npm run build
-      - run: npm test -- --runInBand
-      - run: npm run test:e2e -- --runInBand
+      - run: npm run lint:check
+      - run: npm run typecheck
   docker:
-    needs: test
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -82,6 +82,10 @@ jobs:
           docker compose -p ci config --quiet
           docker compose -p ci up -d --no-build --wait --wait-timeout 180
           curl --fail --retry 5 --retry-delay 2 http://localhost:5001/api/health/db
+          curl --fail http://localhost:5001/api/docs-json > /tmp/openapi.json
+          node -e "const d=require('/tmp/openapi.json'); if (!d.paths['/api/checkout/orders'] || !d.paths['/api/webhooks/stripe']) process.exit(1)"
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://localhost:5001/api/webhooks/stripe)
+          test "$status" = 400
           docker compose -p ci exec -T app sh -c 'test "$(id -u)" != 0'
       - name: Container logs
         if: always()

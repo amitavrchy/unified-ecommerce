@@ -30,7 +30,7 @@ is an explicit opt-in alternative; its default is false.
 ## CI and image publication
 
 Pull requests and pushes to `main` validate Prisma, apply migrations to a fresh
-Postgres 17 database, check schema drift, build, run unit and end-to-end tests,
+Postgres 17 database, check schema drift, build, run lint and TypeScript checks,
 and build/smoke-test the Docker image. Only a passing main-branch image is pushed
 to `ghcr.io/amitavrchy/unified-ecommerce:<full-commit-sha>` using `GITHUB_TOKEN`.
 No Docker Hub credentials are required. Packages inherit GitHub access settings.

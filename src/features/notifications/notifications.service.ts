@@ -30,7 +30,9 @@ export class NotificationsService {
     payload: NotificationPayload,
     client: NotificationClient = this.prisma,
   ) {
-    const created = client.notification.create({ data: { userId, ...payload } });
+    const created = client.notification.create({
+      data: { userId, ...payload },
+    });
     return Promise.resolve(created).then((notification) => {
       this.notifyUser(userId);
       return notification;

@@ -41,7 +41,8 @@ export class TechnicianMediaController {
 
   @Post()
   @ApiOperation({
-    summary: 'Upload before, after, equipment, or inlet media for an assigned job',
+    summary:
+      'Upload before, after, equipment, or inlet media for an assigned job',
     description:
       'Send multipart form data with kind plus a raw file. The file is uploaded to Cloudinary. Text URLs are not accepted.',
   })

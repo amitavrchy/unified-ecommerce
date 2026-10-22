@@ -4,7 +4,10 @@ export class TechnicianHomeStatsResponseDto {
   @ApiProperty({ example: 'Marc' })
   firstName!: string;
 
-  @ApiProperty({ example: 3, description: 'Assigned jobs scheduled for today.' })
+  @ApiProperty({
+    example: 3,
+    description: 'Assigned jobs scheduled for today.',
+  })
   jobsToday!: number;
 
   @ApiProperty({ example: 1 })

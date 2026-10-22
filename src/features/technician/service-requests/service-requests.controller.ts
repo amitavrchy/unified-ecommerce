@@ -76,7 +76,7 @@ export class TechnicianServiceRequestsController {
     @Body() dto: TechnicianUpdateStatusDto,
   ) {
     return this.requests.start(user, id, {
-      status: dto.status as unknown as RequestStatus,
+      status: dto.status,
       note: dto.note,
     });
   }

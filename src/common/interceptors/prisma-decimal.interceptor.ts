@@ -14,10 +14,7 @@ import { Observable, map } from 'rxjs';
  */
 @Injectable()
 export class PrismaDecimalInterceptor implements NestInterceptor {
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<unknown> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getHandler().name === 'stream') {
       return next.handle();
     }

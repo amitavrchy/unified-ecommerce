@@ -2,9 +2,35 @@ import { InternalServerErrorException } from '@nestjs/common';
 
 export function checkoutCurrency(): string {
   const currency = (process.env.STRIPE_CURRENCY ?? 'cad').toLowerCase();
-  if (!/^[a-z]{3}$/.test(currency))
+  // Monetary columns store two-decimal prices and taxes. Reject currencies
+  // with different Stripe minor-unit rules rather than charging 100x too much.
+  const otherPrecision = new Set([
+    'bif',
+    'clp',
+    'djf',
+    'gnf',
+    'jpy',
+    'kmf',
+    'krw',
+    'mga',
+    'pyg',
+    'rwf',
+    'vnd',
+    'vuv',
+    'xaf',
+    'xof',
+    'xpf',
+    'isk',
+    'ugx',
+    'bhd',
+    'jod',
+    'kwd',
+    'omr',
+    'tnd',
+  ]);
+  if (!/^[a-z]{3}$/.test(currency) || otherPrecision.has(currency))
     throw new InternalServerErrorException(
-      'STRIPE_CURRENCY must be an ISO 4217 currency code',
+      'STRIPE_CURRENCY must be a supported two-decimal ISO currency code (for example cad or usd)',
     );
   return currency;
 }

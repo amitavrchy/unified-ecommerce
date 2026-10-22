@@ -11,6 +11,9 @@ export class AdminReturnActionEligibilityDto {
 }
 
 export class AdminReturnRequestDto {
+  @ApiPropertyOptional({ nullable: true }) stripeRefundId!: string | null;
+  @ApiPropertyOptional({ nullable: true }) refundAmount!: number | null;
+  @ApiPropertyOptional({ nullable: true }) refundStatus!: string | null;
   @ApiProperty() id!: string;
   @ApiProperty({ enum: ReturnStatus }) status!: ReturnStatus;
   @ApiProperty() reason!: string;

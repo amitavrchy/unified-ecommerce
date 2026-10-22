@@ -281,12 +281,14 @@ token. The response returns a `callId` for token refresh and end operations.
 npx prisma validate
 npm run prisma:generate
 npm run build
-npm test -- --runInBand
+npm run typecheck
+npm run lint:check
 ```
 
-The OpenAPI contract test fails if any documented object schema is blank or an
-endpoint lacks a typed 2xx response. Every feature endpoint has request and
-response DTOs with examples in Swagger.
+Spec files and Jest/Supertest dependencies have been removed. CI validates lint,
+TypeScript, build, database migrations, OpenAPI availability and Docker health.
+See [Stripe verification notes](docs/stripe/review.md) for payment review results
+and the remaining provider-side configuration.
 
 ## Docker and CI/CD
 
