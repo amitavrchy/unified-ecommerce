@@ -944,23 +944,44 @@ export class StripeService {
     });
     if (!claimed.payment) return claimed.request;
     const request = claimed.request;
-    const refund = request.stripeRefundId
-      ? await stripe.refunds.retrieve(request.stripeRefundId)
-      : await stripe.refunds.create(
-          {
-            payment_intent: claimed.payment.stripePaymentIntentId!,
-            amount: this.toMinorUnit(request.refundAmount),
-            metadata: {
-              paymentId: claimed.payment.id,
-              orderId,
-              returnRequestId: request.id,
-              refundAttempt: String(request.refundAttempt),
+    let refund: Stripe.Refund;
+    try {
+      refund = request.stripeRefundId
+        ? await stripe.refunds.retrieve(request.stripeRefundId)
+        : await stripe.refunds.create(
+            {
+              payment_intent: claimed.payment.stripePaymentIntentId!,
+              amount: this.toMinorUnit(request.refundAmount),
+              metadata: {
+                paymentId: claimed.payment.id,
+                orderId,
+                returnRequestId: request.id,
+                refundAttempt: String(request.refundAttempt),
+              },
             },
+            {
+              idempotencyKey: `refund-${claimed.payment.id}-${request.id}-${request.refundAttempt}`,
+            },
+          );
+    } catch (error) {
+      if (!request.stripeRefundId && this.isDefiniteProviderRejection(error)) {
+        // A definitive validation rejection created no refund. Release this
+        // reservation so correcting the request/configuration can retry safely.
+        await this.prisma.returnRequest.updateMany({
+          where: {
+            id: request.id,
+            refundAttempt: request.refundAttempt,
+            refundStatus: 'requested',
+            stripeRefundId: null,
           },
-          {
-            idempotencyKey: `refund-${claimed.payment.id}-${request.id}-${request.refundAttempt}`,
+          data: {
+            refundStatus: 'failed',
+            resolution: 'Refund request rejected by Stripe',
           },
-        );
+        });
+      }
+      throw error;
+    }
     await this.reconcileRefund(refund, user.id);
     return this.prisma.returnRequest.findUniqueOrThrow({
       where: { id: request.id },
