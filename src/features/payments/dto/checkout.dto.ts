@@ -35,13 +35,14 @@ export class CreateOrderCheckoutDto {
   @IsString()
   shippingAddressId!: string;
 
-  @ApiPropertyOptional({
-    description: 'Stable UUID used to safely retry the same checkout request.',
+  @ApiProperty({
+    description:
+      'Client-generated stable UUID. Reuse it for a retry of this exact checkout, and generate a new one only for a new checkout.',
     format: 'uuid',
+    example: 'a644413e-03cd-45a3-b2b9-0295d2a9f8ea',
   })
-  @IsOptional()
   @IsUUID()
-  idempotencyKey?: string;
+  idempotencyKey!: string;
 }
 
 export class CreateCartCheckoutDto {
@@ -52,13 +53,14 @@ export class CreateCartCheckoutDto {
   @IsString()
   shippingAddressId!: string;
 
-  @ApiPropertyOptional({
-    description: 'Stable UUID used to safely retry the same checkout request.',
+  @ApiProperty({
+    description:
+      'Client-generated stable UUID. Reuse it for a retry of this exact checkout, and generate a new one only for a new checkout.',
     format: 'uuid',
+    example: 'a644413e-03cd-45a3-b2b9-0295d2a9f8ea',
   })
-  @IsOptional()
   @IsUUID()
-  idempotencyKey?: string;
+  idempotencyKey!: string;
 }
 
 export class CheckoutSessionResponseDto {

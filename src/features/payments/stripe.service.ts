@@ -288,45 +288,63 @@ export class StripeService {
     const quote = request.quotation;
     if (quote.status !== QuoteStatus.ACCEPTED || quote.validUntil <= new Date())
       throw new BadRequestException('An active accepted quotation is required');
-    const existing = await this.prisma.payment.findFirst({
-      where: {
-        quotationId: quote.id,
-        status: {
-          in: [
-            PaymentStatus.PENDING,
-            PaymentStatus.PROCESSING,
-            PaymentStatus.AUTHORIZED,
-          ],
+    // Serialize creation per quote at the database level. After the local
+    // attempt exists, its persisted Stripe idempotency key makes concurrent
+    // retries converge on the exact same PaymentIntent rather than placing
+    // multiple manual-capture card holds.
+    const payment = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quote-authorization:${quote.id}`}))`;
+      const existing = await tx.payment.findFirst({
+        where: {
+          quotationId: quote.id,
+          purpose: PaymentPurpose.QUOTATION,
+          status: {
+            in: [
+              PaymentStatus.PENDING,
+              PaymentStatus.PROCESSING,
+              PaymentStatus.AUTHORIZED,
+            ],
+          },
         },
-      },
-      orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing?.idempotencyKey) return existing;
+      if (existing) {
+        return tx.payment.update({
+          where: { id: existing.id },
+          data: { idempotencyKey: randomUUID() },
+        });
+      }
+      return tx.payment.create({
+        data: {
+          userId: user.id,
+          quotationId: quote.id,
+          purpose: PaymentPurpose.QUOTATION,
+          amount: quote.totalAmount,
+          currency: this.currency(),
+          // PROCESSING here means an authorization attempt has been claimed;
+          // it has not yet been confirmed/captured by Stripe.
+          status: PaymentStatus.PROCESSING,
+          idempotencyKey: randomUUID(),
+        },
+      });
     });
-    if (existing?.stripePaymentIntentId) {
+    if (payment.stripePaymentIntentId) {
       const intent = await this.client().paymentIntents.retrieve(
-        existing.stripePaymentIntentId,
+        payment.stripePaymentIntentId,
       );
       return {
-        paymentId: existing.id,
+        paymentId: payment.id,
         paymentIntentId: intent.id,
         clientSecret: intent.client_secret,
         status: intent.status,
-        amount: Number(existing.amount),
-        currency: existing.currency,
+        amount: Number(payment.amount),
+        currency: payment.currency,
       };
     }
-    const payment = await this.prisma.payment.create({
-      data: {
-        userId: user.id,
-        quotationId: quote.id,
-        purpose: PaymentPurpose.QUOTATION,
-        amount: quote.totalAmount,
-        currency: this.currency(),
-        status: PaymentStatus.PENDING,
-        idempotencyKey: randomUUID(),
-      },
-    });
+    let intent: Stripe.PaymentIntent | undefined;
     try {
-      const intent = await this.client().paymentIntents.create(
+      intent = await this.client().paymentIntents.create(
         {
           amount: this.toMinorUnit(quote.totalAmount),
           currency: this.currency(),
@@ -356,13 +374,18 @@ export class StripeService {
         currency: updated.currency,
       };
     } catch (error) {
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: {
-          status: PaymentStatus.FAILED,
-          failureMessage: 'Could not create Stripe PaymentIntent',
-        },
-      });
+      // A network failure can happen after Stripe created the intent. Keep the
+      // attempt active so a retry uses the same Stripe idempotency key and
+      // cannot create a second authorization hold.
+      if (!intent) {
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, stripePaymentIntentId: null },
+          data: {
+            failureMessage:
+              'Stripe authorization creation is pending a safe retry',
+          },
+        });
+      }
       throw error;
     }
   }
